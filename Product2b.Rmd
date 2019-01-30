@@ -1,0 +1,455 @@
+---
+title: "產品銷售資訊"
+author: "陳正謀、余曜廷、周俊德"
+date: "`r Sys.time()`"
+output: 
+  html_document:
+    highlight: pygments
+    theme: flatly
+    css: style.css
+---
+
+
+# [`r emo::ji("teacher")`](https://www.youtube.com/watch?v=wuwS1KaooE0&list=PLvOqBoPSLQJfEcWBBGPpI_DsryLPlBtsb) 
+點我看教學影片 (ctrl + click)
+<br>
+
+首先將所需要的packages套件下載下來
+```{r}
+packages = c(
+  "dplyr","ggplot2","googleVis","devtools","magrittr","slam","irlba","plotly",
+  "arules","arulesViz","Matrix","recommenderlab")
+existing = as.character(installed.packages()[,1])
+for(pkg in packages[!(packages %in% existing)]) install.packages(pkg)
+```
+
+接著載入接下來所有會用到的package套件
+```{r warning=F, message=F, cache=F, error=F}
+rm(list=ls(all=TRUE))
+LOAD = TRUE
+library(dplyr)
+library(ggplot2)
+library(googleVis)
+library(Matrix)
+library(slam)
+library(irlba)
+library(plotly)
+library(arules)
+library(arulesViz)
+library(recommenderlab)
+```
+<br><hr>
+
+### A. 顧客產品矩陣
+
+sed：是當前使用情况
+gc trigger：是会触发垃圾回收的值
+max used是上次gc()操作或者是此次啟動R後，使用最大值。
+(Mb)是Ncells和Vcells的大小轉换為Mb单位時的值。
+Ncells即cons cells
+Vcells即vector cells
+Load data frame and rename
+
+```{r}
+load("tf0.rdata")
+A = A0; X = X0; Z = Z0; rm(A0,X0,Z0); gc()
+Z = subset(Z, cust %in% A$cust)
+```
+
+首先帶大家來看一下我們資料的內容
+Z為總交易項目
+我們用head(Z)來觀看Z data frame裡的前六筆資料
+1. date 是顧客的交易日期
+2. cust 是顧客ID 
+3. age  是年齡代碼
+4. area 是顧客所在區域
+5. cat  是產品種類代碼
+6. prod 是產品條碼
+7. qty  是產品數量
+8. cost 是已經乘以數量的產品成本 
+9. price 是乘以數量的金額
+10.tid   是交易代碼 
+
+如果顧客在同一天買了不同的產品，那在這個Z data frame 中會把他們分開記載。
+```{r}
+head(Z)
+```
+
+再來看看X資料
+這裡是將顧客同一天的消費項目都給予相同的tid，然後以tid來合併顧客在同一天的交易項目
+我們觀察一下前十筆資料
+1. tid    是交易代碼
+2. items  是購買幾種不同種類的產品
+3. pieces 是購買數目 
+4. total  是顧客的總消費金額
+5. gross  是毛利，也就是total-總成本
+
+```{r}
+head(X)
+```
+
+最後來看Ａ資料
+這邊是以cust，也就是每一位顧客來合併次顧客的所有交易紀錄
+1. r是最近一次購買距今天數
+2. s是第一次購買距今天數
+2. f是購買次數
+3. m平均客單價（也就是rev除以購買次數）
+4. rev是顧客的花費
+
+```{r}
+head(A)
+```
+
+接著觀察Z這筆交易資料中的顧客人數，和產品人數
+
+```{r}
+n_distinct(Z$cust)  # 32241 個顧客
+n_distinct(Z$prod)  # 23787 個產品
+```
+
+製作顧客產品矩陣其實很快、也很容易
+透過cpm這個函數我們製作一個縱軸為顧客，橫軸為產品的顧客產品矩陣
+cpm中會有很多值為零，因為同一個顧客不可購買每一種產品
+mean(cpm>0)為0.00096799，代表當中有許多值為零
+```{r}
+library(Matrix) 
+library(slam)
+cpm = xtabs(~ cust + prod, Z, sparse=T)  # customer product matrix
+dim(cpm)             # 32241 23787
+mean(cpm > 0)        # 0.00096799
+```
+
+我們觀察cpm數值的分佈，發現有40%的產品的總被購買次數不到六次
+
+```{r}
+colSums(cpm) %>% quantile(seq(0,1,0.1))
+mean(colSums(cpm) > 10)
+```
+
+為了不要讓極端值影響我們的分析，因此刪去購買次數小於6的產品
+為了方便顧客產品矩陣和顧客資料框的合併，我們選擇先保留沒有購買產品的顧客
+
+```{r}
+cpm = cpm[, colSums(cpm) >= 6]      # remove the least frequent products
+# cpm = cpm[rowSums(cpm) > 0, ]     # remove non-buying customers
+cpm = cpm[, order(-colSums(cpm))]   # order product by frequency
+dim(cpm)                            # 32241 23787>14621
+```
+
+這裡我們用max(cpm) 發現一個顧客最高購買同一個產品49次
+我們在剛剛刪掉總被購買次數小於零的產品後，發現cpm中為0的值減少了 0.00096799 -> 0.0015248
+接著觀察每個顧客購買同一產品次數的比例
+由此可看出，9成以上的顧客購買同一產品的次數為1次
+
+```{r}
+max(cpm)         # 49
+mean(cpm > 0)    # 0.0015248
+table(cpm@x) %>% prop.table %>% round(4) %>% head(10) 
+```
+
+<br><p class="qiz">
+
+<牛刀小試>
+請你用一個指令列出被購買最多次的10個產品，和它們被購買的次數。
+<br></p>
+```{r}
+cpm[,1:10] %>% col_sums()
+```
+
+<br><p class="qiz">
+■ 在什麼前提之下，我們可以把購買這十個產品的次數當作變數，用來預測顧客在下一期會不會來購買呢？<br>
+■ 我們如何把這十個變數，併入顧客資料框呢？ <br>
+■ 我們可不可以(在什麼前提之下我們可以)直接用`cbind()`新變數併入顧客資料框呢？<br>
+■ 我們期中競賽的資料，符合直接用`cbind()`併入新變數的條件嗎？ 我們要如何確認這一件事呢？<br>
+<br></p class="qiz">
+<br><hr>
+
+
+### B. 直接以產品的被購買頻率作為變數
+
+我們已經依照被購買次數的大小對顧客產品矩陣的欄位做排序
+接下來我們以產品的被購買次數來製作變數，**排`cpm`在最前邊的(N個)欄位就是變數**!
+
+##### B1. 以(最常被購買的)產品的購買次數對顧客分群
+在這邊我們選擇前400個最常被購買的產品當作變數對將顧客進行分群,共計200群
+其實就是將購買行為相似的顧客分在同一群
+最後我們再觀察分群的結果
+
+```{r}
+nop= 400  # no. product = no. variables
+k = 200   # no. cluster
+set.seed(111); kg = kmeans(cpm[,1:nop], k)$cluster
+table(kg) %>% as.vector %>% sort
+```
+
+##### B2. 各群組平均屬性
+
+將分群結果併入顧客資料框A 
+```{r}
+df = A %>% inner_join(data.frame(
+  cust = as.integer(rownames(cpm)), 
+  kg) )
+head(df)  # 32241
+```
+
+計算各群組的平均屬性
+```{r}
+df = data.frame(
+  aggregate(. ~ kg, df[,c(2:7,10)], mean), # averages
+  size = as.vector(table(kg)),   # no. customers in the group
+  dummy = 2001                   # dummy column for googleViz
+  )
+head(df)
+```
+
+##### B3. 互動式泡泡圖
+
+這部分的用法可以參考影片
+
+```{r results="asis", tidy=FALSE}
+op = options(gvis.plot.tag='chart')
+plot( gvisMotionChart(
+  subset(df[,c(1,4,5,6,8,2,3,7,9)], 
+         size >= 20 & size <= 1000),  # range of group size 
+  "kg", "dummy", options=list(width=800, height=600) ) )
+```
+
+##### B4. 各群組的代表性產品 (Signature Product)
+
+在這邊我們定義了Sig 這個function,我們可以透過在這個function裡面輸入集群的號碼來得知該集群的代表性商品
+name       ＃ 產品名稱
+share      #  該產品有多少％被賣給這個集群的顧客
+conf       #  這個集群的人有多少％的機率購買這個產品
+base       #  一般顧客購買這個產品的機率
+lift       #  該集群的人購買這個產品的機率相較於一般顧客購買該產品機率的倍數
+
+
+```{r}
+# use global variables: cpm, kg
+Sig = function(gx, P=1000, H=10) {
+  print(sprintf("Group %d: No. Customers = %d", gx, sum(kg==gx)))
+  bx = cpm[,1:P]
+  data.frame(n = col_sums(bx[kg==gx,])) %>%      # frequency
+    mutate(
+      share = round(100*n/col_sums(bx),2),       # %prod sold to this cluster
+      conf = round(100*n/sum(kg==gx),2),         # %buy this product, given cluster
+      base = round(100*col_sums(bx)/nrow(bx),2), # %buy this product, all cust 
+      lift = round(conf/base,1),                 # conf/base  
+      name = colnames(bx)                        # name of prod
+    ) %>% arrange(desc(lift)) %>% head(H)
+  }
+```
+
+```{r}
+Sig(130)
+```
+<br><hr>
+
+
+### C. 使用尺度縮減方法抽取顧客(產品)的特徵向量 
+
+##### C1. 巨大尺度縮減 (SVD, Sigular Value Decomposition)
+
+巨大尺度縮減，就是將顧客所有的產品資訊，壓縮成400個特徵相量，這400個特徵向量夾帶原來所有產品的資訊，
+換句話說，觀察這400個特徵向量就可以了解顧客購買所有產品的行為。
+
+```{r}
+library(irlba)
+if(LOAD) {
+  load("svd2a.rdata")
+} else {
+  smx = cpm
+  smx@x = pmin(smx@x, 2)            # cap at 2, similar to normalization  
+  t0 = Sys.time()
+  svd = irlba(smx, 
+              nv=400,               # length of feature vector nv=400個特徵向量
+              maxit=800, work=800)    
+  print(Sys.time() - t0)            # 1.8795 mins
+  save(svd, file = "svd2a.rdata")
+}
+```
+
+<br><p class="qiz">
+<牛刀小試2> 
+■ 在什麼前提之下，我們可以把顧客購買產品的特徵向量當作變數，用來預測顧客在下一期會不會來購買呢？<br>
+1.可以。
+2.如果要將產品的特徵向量（X）去預測（Y），（X）必須要對預測（Y）有意義，如X與Y要有相關性、預測力或影響力。
+■ 如果可以的話，我們如何把顧客購買產品的特徵向量，併入顧客資料框呢？ <br>
+1.從svd資料中,找出每位顧客對於400個產品的特徵向量
+2.再以CID併入資料集A中
+■ 我們可不可以(在什麼前提之下我們可以)直接用`cbind()`將特徵向量併入顧客資料框呢？<br>
+1.cbind()把矩陣橫向合併成一個大矩陣（列方式）
+2.可以。前提是,row數目要相同且二個資料框cid 的次序要相同。
+■ 我們期中競賽的資料，符合直接用`cbind()`併入特徵向量的條件嗎？ 我們要如何確認這一件事呢？<br>
+1.符合。
+2.要確認資料框row的次序要相同。
+<br></p class="qiz"><br>
+
+
+##### C2. 依特徵向量對顧客分群
+```{r}
+set.seed(111); kg = kmeans(svd$u, 200)$cluster
+table(kg) %>% as.vector %>% sort
+```
+
+##### C3. 互動式泡泡圖 (Google Motion Chart)
+
+計算每一群特徵向量的平均屬性
+```{r results="asis", tidy=FALSE}
+# clustster summary
+df = inner_join(A, data.frame(         
+  cust = as.integer(rownames(cpm)), kg)) %>% 
+  group_by(kg) %>% summarise(
+    avg_frequency = mean(f),
+    avg_monetary = mean(m),
+    avg_revenue_contr = mean(rev),
+    group_size = n(),
+    avg_recency = mean(r),
+    avg_gross_profit = mean(raw)) %>% 
+  ungroup %>% 
+  mutate(dummy = 2001, kg = sprintf("G%03d",kg)) %>% 
+  data.frame
+
+head(df)
+
+# Google Motion Chart
+plot( gvisMotionChart(
+  subset(df, group_size >= 20 & group_size <= 1200),     
+  "kg", "dummy", options=list(width=800, height=600) ) )
+```
+
+##### C4. 各群組的代表性產品 (Signature Product)
+
+```{r}
+Sig(162)
+```
+<br><hr>
+
+### E. 產品推薦 Product Recommendation
+
+##### E1. 篩選顧客、產品
+太少被購買的產品和購買太少產品的顧客都不適合使用Collaborative Filtering這種產品推薦方法，所以我們先對顧客和產品做一次篩選
+```{r}
+library(recommenderlab)
+rx = cpm[, colSums(cpm > 0) >= 50] 
+### 這邊是要50次以上都是由不同顧客購買，所以在cpm>0時，不論單一顧客購買幾次，都為顯示為true，計為一次
+rx = rx[rowSums(rx > 0) >= 20 & rowSums(rx > 0) <= 300, ]
+### 同理，這裡是討論顧客購買至少購買20種以上300種以下的品項，所以在rx>0時，如果一個顧客購買同一種品項很多次，
+### 也會只被計為一次
+dim(rx)  # 8846 3354 有8846名顧客，購買只少20種以上300種以下品項，3354個產品至少被50個以上不同的顧客購買。
+```
+
+##### E2. 選擇產品評分方式
+可以選擇要用
+
++ 購買次數 (realRatingMatrix) 或
++ 是否購買 (binaryRatingMatrix)
+
+做模型。
+```{r}
+rx = as(rx, "realRatingMatrix")  # realRatingMatrix
+bx = binarize(rx, minRating=1)   # binaryRatingMatrix
+```
+
+##### E3. 建立模型、產生建議 - UBCF
+UBCF：User Based Collaborative Filtering 
+UBCF，是將購買行為相似的顧客作分群，若你為該群的顧客，會推薦給你群裡其他顧客所購買的產品
+舉例來說，Netflix，會將觀看電影相似的客群分成一群，然後推薦群內的顧客彼此看過的影片
+```{r}
+rUBCF = Recommender(bx[1:8800,], method = "UBCF")
+pred = predict(rUBCF, bx[8801:8846,], n=4)
+do.call(rbind, as(pred, "list")) %>% head(15)
+```
+
+##### E4. 建立模型、產生建議 - IBCF
+IBCF：Item Based Collaborative Filtering 
+是將特徵相似的產品做分群，如果顧客使用這群產品中的產品，
+將會推薦給顧客群裡其他的產品
+舉裡來說，Netflix，將影片類型細分，像是愛情片、恐怖片等等，若你觀看愛情片，Netflix會推薦給你其他相似的愛情片
+```{r}
+if(LOAD) {
+  load("recommenders.rdata")
+} else{
+  rIBCF <- Recommender(bx[1:6000,], method = "IBCF")
+}
+pred = predict(rIBCF, bx[8801:8846,], n=4)
+do.call(rbind, as(pred, "list")) %>% head(15)
+```
+
+```{r}
+save(rIBCF, rUBCF, file="recommenders.rdata")
+```
+
+##### E5. 設定模型(準確性)驗證方式
+```{r}
+set.seed(4321)
+scheme = evaluationScheme(     
+  bx, method="split", train = .75,  given=5)
+```
+
+##### E6. 設定推薦方法(參數)
+<參考購物籃分析中的關聯規則>
+support 該產品被全部顧客購買的機率
+confidence A被購買時B被購買的機率
+Random：就是用隨機的方式來推薦你可能會喜歡的產品
+Popular：推薦大家都喜歡的熱門產品給你
+關聯規則：我們找出當顧客購買A產品時，購買B產品的機率，藉此找出A、B產品之間的關聯規則，然後利用這些規則來做推薦
+```{r}
+algorithms = list(            
+  AR53 = list(name="AR", param=list(support=0.0005, confidence=0.3)),
+  AR43 = list(name="AR", param=list(support=0.0004, confidence=0.3)),
+  RANDOM = list(name="RANDOM", param=NULL),
+  POPULAR = list(name="POPULAR", param=NULL),
+  UBCF = list(name="UBCF", param=NULL),
+  IBCF = list(name="IBCF", param=NULL) )
+```
+
+##### E7. 建模、預測、驗證(準確性)
+```{r}
+if(LOAD) {
+  load("results2a.rdata")
+} else {
+  t0 = Sys.time()
+  results = evaluate(            
+    scheme, algorithms, 
+    type="topNList",     # method of evaluation
+    n=c(5, 10, 15, 20)   # no. recom. to be evaluated
+    )
+  print(Sys.time() - t0)
+  save(results, file="results2a.rdata")
+}
+## AR run fold/sample [model time/prediction time]
+##   1  [4.02sec/214.6sec] 
+## AR run fold/sample [model time/prediction time]
+##   1  [10.49sec/538.5sec] 
+## RANDOM run fold/sample [model time/prediction time]
+##   1  [0sec/9.48sec] 
+## POPULAR run fold/sample [model time/prediction time]
+##   1  [0sec/11.09sec] 
+## UBCF run fold/sample [model time/prediction time]
+##   1  [0sec/75.42sec] 
+## IBCF run fold/sample [model time/prediction time]
+##   1  [198.2sec/1.63sec] 
+## Time difference of 18.72 mins
+```
+
+##### E8. 模型準確性比較
+```{r fig.height=5, fig.width=5}
+# load("results.rdata")
+par(mar=c(4,4,3,2),cex=0.8)
+cols = c("red", "magenta", "gray", "orange", "blue", "green")
+plot(results, annotate=c(1,3), legend="topleft", pch=19, lwd=2, col=cols)
+abline(v=seq(0,0.006,0.001), h=seq(0,0.08,0.01), col='lightgray', lty=2)
+```
+
+```{r}
+getConfusionMatrix(results$IBCF)
+```
+
+<br><br><hr><br><br><br>
+
+
+
+
+
+
