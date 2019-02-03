@@ -11,7 +11,7 @@ output:
 
 
 # [`r emo::ji("teacher")`](https://www.youtube.com/watch?v=wuwS1KaooE0&list=PLvOqBoPSLQJfEcWBBGPpI_DsryLPlBtsb) 
-點我看教學影片 (ctrl + click)
+點我看教學影片 (ctrl + click) 或是按右鍵開啟新分頁觀看影片
 <br>
 
 首先將所需要的packages套件下載下來
@@ -206,6 +206,7 @@ head(df)
 
 這部分的用法可以參考影片
 
+互動式泡泡圖請先點選左上角的查看網站資訊 >> 網站設定 >> flash >> 允許 >> 然後重新整理即可
 ```{r results="asis", tidy=FALSE}
 op = options(gvis.plot.tag='chart')
 plot( gvisMotionChart(
